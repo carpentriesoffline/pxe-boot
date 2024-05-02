@@ -184,7 +184,7 @@ echo "/pxe-root/${SERIAL} ${CLIENTIP}(rw,sync,no_subtree_check,no_root_squash)" 
 echo "/home ${CLIENTIP}(rw,sync,no_subtree_check,no_root_squash)" >> /etc/exports
 echo "/modules ${CLIENTIP}(rw,sync,no_subtree_check,no_root_squash)" >> /etc/exports
 echo "/sharedfs ${CLIENTIP}(rw,sync,no_subtree_check,no_root_squash)" >> /etc/exports
-echo "NodeName=${NODENAME} NodeAddr=${CLIENTIP} CPUs=4 State=UNKNOWN" >> /etc/slurm/slurmd.conf
+echo "NodeName=${NODENAME} NodeAddr=${CLIENTIP} CPUs=4 State=UNKNOWN" >> /etc/slurm/slurm.conf
 echo "${NODENAME}" > "/pxe-root/${SERIAL}/etc/hostname"
 echo "${CLIENTIP}  ${NODENAME}" >> "/etc/hosts"
 echo "dhcp-host=${MACADDR},${CLIENTIP}" >> "/etc/dnsmasq.conf"

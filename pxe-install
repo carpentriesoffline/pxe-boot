@@ -1,0 +1,136 @@
+#!/bin/bash
+
+trap '{ stty sane; echo ""; errexit "Aborted"; }' SIGINT SIGTERM
+
+errexit()
+{
+  echo ""
+  echo "$1"
+  echo ""
+  exit 1
+}
+
+if [ $(id -u) -ne 0 ]; then
+  errexit "Must be run as root user: sudo $0"
+fi
+PGMNAME="$(basename $0)"
+for PID in $(pidof -x -o %PPID "${PGMNAME}"); do
+  if [ ${PID} -ne $$ ]; then
+    errexit "${PGMNAME} is already running"
+  fi
+done
+BOOTMNT="$(sed -n 's|^\S\+\s\+\(/boot\S*\)\s\+.*$|\1|p' /etc/fstab)"
+INFO=$(ip -4 addr show dev eth0 | grep inet)
+INET=$(sed -n 's|^\s*inet\s\+\(\S\+\)\s.*|\1|p' <<< ${INFO})
+BRD=$(sed -n 's|^.*\s*brd\s\+\(\S\+\)\s.*|\1|p' <<< ${INFO})
+GATEWAY=$(ip route | awk '/default/ {print $3}')
+DNS_SRV=${GATEWAY}
+echo ""
+echo "IP Address: ${INET}"
+echo "DNS Server: ${DNS_SRV}"
+echo " Broadcast: ${BRD}"
+echo "   Gateway: ${GATEWAY}"
+echo ""
+echo -n "Install PXE Network Boot Server (y/n)? "
+while read -r -n 1 -s answer; do
+  if [[ ${answer} = [yYnN] ]]; then
+    echo "${answer}"
+    if [[ ${answer} = [yY] ]]; then
+      break
+    else
+      errexit "Aborted"
+    fi
+  fi
+done
+echo ""
+echo "Updating package indexes"
+apt-get -y update > /dev/null
+if [ $? -ne 0 ]; then
+  errexit "Unable to update package indexes"
+fi
+echo ""
+echo "Upgrading packages"
+apt-get -y upgrade > /dev/null && apt-get -y dist-upgrade > /dev/null
+if [ $? -ne 0 ]; then
+  errexit "Unable to upgrade packages"
+fi
+echo ""
+echo "Installing dnsmasq"
+apt-get -y install dnsmasq > /dev/null
+if [ $? -ne 0 ]; then
+  errexit "Unable to install dnsmasq"
+fi
+echo ""
+echo "Installing nfs-kernel-server"
+apt-get -y install nfs-kernel-server > /dev/null
+if [ $? -ne 0 ]; then
+  errexit "Unable to install nfs-kernel-server"
+fi
+
+cat <<EOF > /etc/dnsmasq.conf
+port=0
+dhcp-range=${BRD},proxy
+log-dhcp
+enable-tftp
+tftp-root=/pxe-boot
+pxe-service=0,"Raspberry Pi Boot"
+EOF
+
+cat <<EOF > /etc/systemd/network/10-eth0.netdev
+[Match]
+Name=eth0
+
+[Network]
+DHCP=no
+EOF
+
+cat <<EOF > /etc/systemd/network/11-eth0.network
+[Match]
+Name=eth0
+
+[Network]
+Address=${INET}
+DNS=${DNS_SRV}
+
+[Route]
+Gateway=${GATEWAY}
+EOF
+
+sed -i "s|^#DNS=$|DNS=${DNS_SRV}|" /etc/systemd/resolved.conf &> /dev/null
+
+mkdir /pxe-boot
+if [ $? -ne 0 ]; then
+  errexit "Unable to make BOOT files directory"
+fi
+chmod 777 /pxe-boot
+cp "${BOOTMNT}/bootcode.bin" /pxe-boot
+mkdir /pxe-root
+if [ $? -ne 0 ]; then
+  errexit "Unable to make ROOT files directory"
+fi
+echo ""
+echo "Enabling services"
+systemctl enable dnsmasq &> /dev/null && \
+systemctl enable dnsmasq.service &> /dev/null && \
+systemctl enable rpcbind &> /dev/null && \
+systemctl enable nfs-kernel-server &> /dev/null && \
+systemctl enable systemd-networkd &> /dev/null
+if [ $? -ne 0 ]; then
+  errexit "Unable to enable services"
+fi
+echo ""
+echo "PXE Network Boot Server installation completed"
+echo ""
+echo "Reboot required"
+echo ""
+echo -n "Reboot now (y/n)? "
+while read -r -n 1 -s answer; do
+  if [[ ${answer} = [yYnN] ]]; then
+    echo "${answer}"
+    if [[ ${answer} = [yY] ]]; then
+      shutdown -r now
+    fi
+    break
+  fi
+done
+echo ""

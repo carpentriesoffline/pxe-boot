@@ -1,0 +1,86 @@
+#!/bin/bash
+
+trap '{ stty sane; echo ""; errexit "Aborted"; }' SIGINT SIGTERM
+
+errexit()
+{
+  echo ""
+  echo "$1"
+  echo ""
+  echo "Usage: $0 serial_number"
+  echo ""
+  exit 1
+}
+
+if [ $(id -u) -ne 0 ]; then
+  errexit "Must be run as root user: sudo $0"
+fi
+PGMNAME="$(basename $0)"
+for PID in $(pidof -x -o %PPID "${PGMNAME}"); do
+  if [ ${PID} -ne $$ ]; then
+    errexit "${PGMNAME} is already running"
+  fi
+done
+file --version &> /dev/null
+if [ $? -eq 127 ]; then
+  echo ""
+  echo "Installing file"
+  echo ""
+  apt-get update
+  apt-get install file
+fi
+SERIAL="$1"
+if [ "${SERIAL}" = "" ]; then
+  errexit "No serial number specified"
+fi
+SERIAL="$(tr [A-Z] [a-z] <<< "${SERIAL}")"
+if [[ ! "${SERIAL}" =~ ^[[:xdigit:]]{8}$ ]]; then
+  errexit "Invalid serial number: ${SERIAL}"
+fi
+if [[ ! -e "/pxe-boot/${SERIAL}" || ! -e "/pxe-root/${SERIAL}" || $(grep -c "${SERIAL}" /etc/exports) -eq 0 ]]; then
+  errexit "Serial number ${SERIAL} does not exist" 
+fi
+SYS="$(file -b /bin/bash | sed -n 's|^.*, \(ARM\s*\S*\),.*$|\1|p')"
+PXE="$(file -b /pxe-root/${SERIAL}/bin/bash | sed -n 's|^.*, \(ARM\s*\S*\),.*$|\1|p')"
+if [ "${SYS}" != "${PXE}" ]; then
+  errexit "${SERIAL} architecture differs from system architecture"
+fi
+echo ""
+echo -n "chroot to ${SERIAL} (y/n)? "
+while read -r -n 1 -s answer; do
+  if [[ ${answer} = [yYnN] ]]; then
+    echo "${answer}"
+    if [[ ${answer} = [yY] ]]; then
+      break
+    else
+      errexit "Aborted"
+    fi
+  fi
+done
+BOOTMNT="/pxe-root/${SERIAL}$(sed -n 's|^\S\+\s\+\(/boot\S*\)\s\+.*$|\1|p' "/pxe-root/${SERIAL}/etc/fstab")"
+echo ""
+echo "Attempting to chroot to ${SERIAL}"
+echo "Host root filesystem is available at /host-root-fs"
+echo "Use exit or ^D to terminate chroot"
+echo ""
+mount --bind /dev "/pxe-root/${SERIAL}/dev"
+mount --bind /sys "/pxe-root/${SERIAL}/sys"
+mount --bind /proc "/pxe-root/${SERIAL}/proc"
+mount --bind /dev/pts "/pxe-root/${SERIAL}/dev/pts"
+mount --bind "/pxe-boot/${SERIAL}" "${BOOTMNT}"
+mkdir "/pxe-root/${SERIAL}/host-root-fs"
+mount --bind / "/pxe-root/${SERIAL}/host-root-fs"
+chroot "/pxe-root/${SERIAL}"
+umount "/pxe-root/${SERIAL}/dev/pts" "/pxe-root/${SERIAL}/proc" "/pxe-root/${SERIAL}/sys" "/pxe-root/${SERIAL}/dev"
+while read MNTPT
+do
+  if [[ "${MNTPT}" != "${BOOTMNT}" && "${MNTPT}" != "/pxe-root/${SERIAL}/host-root-fs" && ! "${MNTPT}" =~ ^/pxe-root/${SERIAL}/host-root-fs/pxe-root/${SERIAL}/.*$ ]]; then
+    umount "${MNTPT}"
+  fi
+done <<< "$(findmnt -lR | sed -n "s|^\(/pxe-root/${SERIAL}/\S\+\)\s\+.*$|\1|p")"
+umount "/pxe-root/${SERIAL}/host-root-fs"
+rmdir "/pxe-root/${SERIAL}/host-root-fs"
+umount "${BOOTMNT}"
+echo ""
+echo "Exited chroot to ${SERIAL}"
+echo ""

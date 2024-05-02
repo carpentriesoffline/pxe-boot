@@ -1,0 +1,6 @@
+pixie003, 5b7b2379, dc:a6:32:65:e8:1b
+pixie004, 94b61da5, dc:a6:32:64:5b:82
+pixie005, c22a5d0c, dc:a6:32:af:83:e2
+pixie002, fa917c3a, dc:a6:32:af:83:d0
+pixie001, d31758a4, dc:a6:32:65:c4:45
+pixie006, eddbcae0, dc:a6:32:65:e8:42

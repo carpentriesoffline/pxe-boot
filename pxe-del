@@ -1,0 +1,58 @@
+#!/bin/bash
+
+trap '{ stty sane; echo ""; errexit "Aborted"; }' SIGINT SIGTERM
+
+errexit()
+{
+  echo ""
+  echo "$1"
+  echo ""
+  echo "Usage: $0 serial_number"
+  echo ""
+  exit 1
+}
+
+if [ $(id -u) -ne 0 ]; then
+  errexit "Must be run as root user: sudo $0"
+fi
+PGMNAME="$(basename $0)"
+for PID in $(pidof -x -o %PPID "${PGMNAME}"); do
+  if [ ${PID} -ne $$ ]; then
+    errexit "${PGMNAME} is already running"
+  fi
+done
+SERIAL="$1"
+if [ "${SERIAL}" = "" ]; then
+  errexit "No serial number specified"
+fi
+SERIAL="$(tr [A-Z] [a-z] <<< "${SERIAL}")"
+if [[ ! "${SERIAL}" =~ ^[[:xdigit:]]{8}$ ]]; then
+  errexit "Invalid serial number: ${SERIAL}"
+fi
+if [[ ! -e "/pxe-boot/${SERIAL}" && ! -e "/pxe-root/${SERIAL}" && $(grep -c "${SERIAL}" /etc/exports) -eq 0 ]]; then
+  errexit "Serial number ${SERIAL} does not exist" 
+fi
+echo ""
+echo -n "Delete ${SERIAL} from PXE Network Boot Server (y/n)? "
+while read -r -n 1 -s answer; do
+  if [[ ${answer} = [yYnN] ]]; then
+    echo "${answer}"
+    if [[ ${answer} = [yY] ]]; then
+      break
+    else
+      errexit "Aborted"
+    fi
+  fi
+done
+echo ""
+sed -i "/${SERIAL}/d" /etc/exports
+exportfs -ar
+echo "Deleting BOOT files"
+rm -r "/pxe-boot/${SERIAL}"
+echo ""
+echo "Deleting ROOT files"
+rm -r "/pxe-root/${SERIAL}"
+sync
+echo ""
+echo "${SERIAL} deleted from PXE Network Boot Server"
+echo ""

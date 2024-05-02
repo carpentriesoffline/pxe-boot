@@ -1,0 +1,184 @@
+#!/bin/bash
+
+trap '{ stty sane; echo ""; errexit "Aborted"; }' SIGINT SIGTERM
+
+MNTPATH="/tmp/pxe-add-mnt"
+
+errexit()
+{
+  echo ""
+  echo "$1"
+  echo ""
+  if [ "${MNTED}" = "TRUE" ]; then
+    umount "${BOOTMNT2}/" &> /dev/null
+    umount "${MNTPATH}/" &> /dev/null
+  fi
+  rm -rf "${MNTPATH}/" &> /dev/null
+  rmloop
+  echo "Usage: $0 serial_number image_file [client_ip_address]"
+  echo ""
+  exit 1
+}
+
+mkloop()
+{
+  LOOP="$(losetup -f --show -P "${IMGFILE}")"
+  if [ $? -ne 0 ]; then
+    errexit "Unable to create loop device"
+  fi
+}
+
+rmloop()
+{
+  if [ "${LOOP}" != "" ]; then
+    losetup -d "${LOOP}"
+    LOOP="" 
+ fi
+}
+
+mntimg()
+{
+  mkloop
+  if [ ! -d "${MNTPATH}/" ]; then
+    mkdir "${MNTPATH}/"
+    if [ $? -ne 0 ]; then
+      errexit "Unable to make ROOT partition mount point"
+    fi
+  fi
+  mount "${LOOP}p2" "${MNTPATH}/"
+  if [ $? -ne 0 ]; then
+    errexit "Unable to mount image ROOT partition"
+  fi
+  MNTED=TRUE
+  BOOTMNT1="$(sed -n 's|^\S\+\s\+\(/boot\S*\)\s\+.*$|\1|p' "${MNTPATH}/etc/fstab")"
+  BOOTMNT2="${MNTPATH}${BOOTMNT1}"
+  if [ ! -d "${BOOTMNT2}/" ]; then
+    mkdir -p "${BOOTMNT2}/"
+    if [ $? -ne 0 ]; then
+      errexit "Unable to make BOOT partition mount point"
+    fi
+  fi
+  mount "${LOOP}p1" "${BOOTMNT2}/"
+  if [ $? -ne 0 ]; then
+    errexit "Unable to mount image BOOT partition"
+  fi
+}
+
+umntimg()
+{
+  umount "${BOOTMNT2}/"
+  if [ $? -ne 0 ]; then
+    errexit "Unable to unmount image BOOT partition"
+  fi
+  umount "${MNTPATH}/"
+  if [ $? -ne 0 ]; then
+    errexit "Unable to unmount image ROOT partition"
+  fi
+  MNTED=FALSE
+  rmloop
+  rm -r "${MNTPATH}/"
+}
+
+LOOP=""
+MNTED=FALSE
+if [ $(id -u) -ne 0 ]; then
+  errexit "Must be run as root user: sudo $0"
+fi
+PGMNAME="$(basename $0)"
+for PID in $(pidof -x -o %PPID "${PGMNAME}"); do
+  if [ ${PID} -ne $$ ]; then
+    errexit "${PGMNAME} is already running"
+  fi
+done
+SERIAL="$1"
+IMGFILE="$2"
+CLIENTIP="$3"
+if [ "${SERIAL}" = "" ]; then
+  errexit "No serial number specified"
+fi
+SERIAL="$(tr [A-Z] [a-z] <<< "${SERIAL}")"
+if [[ ! "${SERIAL}" =~ ^[[:xdigit:]]{8}$ ]]; then
+  errexit "Invalid serial number: ${SERIAL}"
+fi
+if [[ -e "/pxe-boot/${SERIAL}" || -e "/pxe-root/${SERIAL}" || $(grep -c "${SERIAL}" /etc/exports) -ne 0 ]]; then
+  errexit "Serial number ${SERIAL} already exists" 
+fi
+if [ "${IMGFILE}" = "" ]; then
+  errexit "No image file specified"
+fi
+if [ ! -f "${IMGFILE}" ]; then
+  errexit "${IMGFILE} not found"
+fi
+if [ "${CLIENTIP}" = "" ]; then
+  CLIENTIP="*"
+  echo ""
+  echo "Access will be granted to ALL"
+elif [[ "${CLIENTIP}" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ || \
+"${CLIENTIP}" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}/[0-9]{1,2}$ || \
+"${CLIENTIP}" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}/[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+  IP="${CLIENTIP}"
+  OIFS=${IFS}
+  IFS='./'
+  IP=(${IP})
+  IFS=${OIFS}
+  if [[ ${#IP[@]} -lt 4 || ${IP[0]} -gt 255 || ${IP[1]} -gt 255 || ${IP[2]} -gt 255 || ${IP[3]} -gt 255 || \
+(${#IP[@]} -eq 5 && (${IP[4]} -lt 1 || ${IP[4]} -gt 32)) || \
+(${#IP[@]} -eq 8 && (${IP[4]} -gt 255 || ${IP[5]} -gt 255 || ${IP[6]} -gt 255 || ${IP[7]} -gt 255)) ]]; then
+     errexit  "Invalid client IP address: ${CLIENTIP}"
+  fi
+  echo ""
+  echo "Access will be granted to ${CLIENTIP}"
+else
+  errexit  "Invalid client IP address: ${CLIENTIP}"
+fi
+echo ""
+echo -n "Add ${SERIAL} (${IMGFILE}) to PXE Network Boot Server (y/n)? "
+while read -r -n 1 -s answer; do
+  if [[ ${answer} = [yYnN] ]]; then
+    echo "${answer}"
+    if [[ ${answer} = [yY] ]]; then
+      break
+    else
+      errexit "Aborted"
+    fi
+  fi
+done
+mntimg
+mkdir "/pxe-boot/${SERIAL}"
+if [ $? -ne 0 ]; then
+  errexit "Unable to make BOOT files directory"
+fi
+echo ""
+echo "Adding BOOT files"
+rsync -ax "${BOOTMNT2}/" "/pxe-boot/${SERIAL}/"
+if [ $? -ne 0 ]; then
+  errexit "Unable to add BOOT files"
+fi
+mkdir "/pxe-root/${SERIAL}"
+if [ $? -ne 0 ]; then
+  errexit "Unable to make ROOT files directory"
+fi
+echo ""
+echo "Adding ROOT files"
+rsync -ax "${MNTPATH}/" "/pxe-root/${SERIAL}/"
+if [ $? -ne 0 ]; then
+  errexit "Unable to add ROOT files"
+fi
+umntimg
+HOSTIP="$(ip -4 addr show dev eth0 | sed -n 's|^\s*inet\s\+\(\S\+\)/\S\+\s.*|\1|p')"
+# sed -i "s|\(^.*root=\).*$|\1/dev/nfs nfsroot=${HOSTIP}:/pxe-root/${SERIAL},vers=4.1,proto=tcp rw ip=dhcp rootwait|" "/pxe-boot/${SERIAL}/cmdline.txt"
+
+sed -i "s|\(^.*root=\).*$|\1/dev/nfs nfsroot=${HOSTIP}:/pxe-root/${SERIAL},vers=3 rw ip=dhcp rootwait|" "/pxe-boot/${SERIAL}/cmdline.txt"
+sed -i 's/boot\.mount/boot-firmware.mount/' "/pxe-root/${SERIAL}/lib/systemd/system/sshswitch.service" &> /dev/null
+
+sed -i "/\s\+\/boot\S*\s\+/d" "/pxe-root/${SERIAL}/etc/fstab"
+sed -i '/\s\+\/\s\+/d' "/pxe-root/${SERIAL}/etc/fstab"
+echo "${HOSTIP}:/pxe-boot/${SERIAL} ${BOOTMNT1} nfs defaults,vers=4.1,proto=tcp 0 0" >> "/pxe-root/${SERIAL}/etc/fstab"
+echo "${HOSTIP}:/pxe-root/${SERIAL} /     nfs defaults,vers=4.1,proto=tcp 0 0" >> "/pxe-root/${SERIAL}/etc/fstab"
+echo "/pxe-boot/${SERIAL} ${CLIENTIP}(rw,sync,no_subtree_check,no_root_squash)" >> /etc/exports
+echo "/pxe-root/${SERIAL} ${CLIENTIP}(rw,sync,no_subtree_check,no_root_squash)" >> /etc/exports
+exportfs -ar
+sync
+echo ""
+echo "${SERIAL} (${IMGFILE}) added to PXE Network Boot Server"
+echo ""

@@ -1,0 +1,28 @@
+#!/bin/bash
+
+SERIAL=$(grep Serial /proc/cpuinfo | cut -d ' ' -f 2 | cut -c 9-16)
+echo ""
+echo "Serial number: ${SERIAL}"
+REVISION="$(cat /proc/cpuinfo | sed -n 's|^Revision\s\+:\s\+\(.*\)$|\1|p')"
+if [[ "${REVISION}" =~ [cd]04170 ]]; then
+  MODEL="5"
+elif [[ "${REVISION}" =~ c03130 ]]; then
+  MODEL="400"
+elif [[ "${REVISION}" =~ [abcd]0311[1245] ]]; then
+  MODEL="4B"
+elif [[ "${REVISION}" =~ a020d3 ]]; then
+  MODEL="3B+"
+elif [[ "${REVISION}" =~ a[0235]208[23] && "$(vcgencmd otp_dump | grep 17:)" = "17:3020000a" ]]; then
+  MODEL="3B (with OTP bit 17 set)"
+elif [[ "${REVISION}" =~ a[02]2042 ]]; then
+  MODEL="2B (rev 1.2)"
+else
+  echo ""
+  echo "Raspberry Pi model not 5 / 400 / 4B / 3B+ / 3B (with OTP bit 17 set) / 2B (rev 1.2)"
+  echo " (Any model 1B/2B/3B can be used with an SD card containing only bootcode.bin)"
+  echo ""
+  exit 1
+fi
+echo ""
+echo "Raspberry Pi model ${MODEL}"
+echo ""
